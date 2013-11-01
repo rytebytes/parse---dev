@@ -1,0 +1,14 @@
+{
+    "applications": {
+        "RyteBytes": {
+            "applicationId": "zaZmkcjbGLCrEHagb8uJPt5TKyiFgCg9WffA6c6M", 
+            "masterKey": "vU1HJUY3MKsuqthF0vhXew0S54n2xpuIL7obTGBU"
+        }, 
+        "_default": {
+            "link": "RyteBytes"
+        }
+    }, 
+    "global": {
+        "parseVersion": "1.2.8"
+    }
+}
