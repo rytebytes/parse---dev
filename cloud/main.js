@@ -259,11 +259,11 @@ Parse.Cloud.define("retrievemenu", function(request,response){
 	response.success(
 	[
 	    {   
-	        "name" : "The Founders Favorite",
-	        "long_description":"Our favorite meal to make when pressed for time - a delcious bone-in pork chop, roasted summer-fresh broccoli, and the broiled red potatoes tossed with fresh herbs and olive oil.",
-	        "price":"13",
+	        "name" : "BBQ Chicken",
+	        "long_description":"Succulent bbq chicken.",
+	        "price":"6",
 	        "type":"3",
-	        "picture":"images/missing_menu.png",
+	        "picture":"chicken.png",
 	        "uid" : "1",
 	        "nutrition_info" : {
 	            "calories" : "600",
@@ -272,10 +272,10 @@ Parse.Cloud.define("retrievemenu", function(request,response){
 	        }
 	    },
 	    {   
-	        "name" : "Mob Meal I",     
-	        "long_description":"A meal that will remind your of spaghetti & meatballs.  Whole-wheat linguine is tossed in our home-made gravy (what the old time Italians call tomato sauce) based on a recipe from one of our italian grandmothers.  A trio of delicious italian sausage meatballs round out the meal!",
-	        "price":"10",
-	        "picture":"mob.JPG",
+	        "name" : "Roasted Cauliflower",     
+	        "long_description":"",
+	        "price":"2",
+	        "picture":"cauliflower.png",
 	        "uid" : "2",
 	        "nutrition_info" : {
 	            "calories" : "600",
@@ -284,10 +284,10 @@ Parse.Cloud.define("retrievemenu", function(request,response){
 	        }
 	    },
 	    {   
-	        "name" : "Mob Meal II",
-	        "long_description":"The same deliciousness of the original mob meal made with turkey for a leaner meatball.  All the fun with a fraction of the fat - what more could you ask for?!",
-	        "price":"13",
-	        "picture":"images/mob_meal_two.png",
+	        "name" : "Turkey Meatballs, Garden Veg Sauce",
+	        "long_description":"",
+	        "price":"10",
+	        "picture":"pasta.png",
 	        "uid" : "3",
 	        "nutrition_info" : {
 	            "calories" : "600",
@@ -296,10 +296,10 @@ Parse.Cloud.define("retrievemenu", function(request,response){
 	        }
 	    },
 	    {   
-	        "name" : "RyteBytes Recommended",
-	        "long_description":"Enjoy our ideal home cooked meal, without worrying about the cooking!  A perfectly grilled BBQ chicken breast, broiled red potatoes tossed in fresh herbs with roasted beets & carrots - healthy comfort food.",
-	        "price":"13",
-	        "picture":"images/chick_beets_taters.png",
+	        "name" : "Carrots + Turnips",
+	        "long_description":"",
+	        "price":"2",
+	        "picture":"carrots_turnips.png",
 	        "uid" : "4",
 	        "nutrition_info" : {
 	            "calories" : "600",
@@ -308,11 +308,11 @@ Parse.Cloud.define("retrievemenu", function(request,response){
 	        }
 	    },
 	    {   
-	        "name" : "The Fred Flintrock",
-	        "short_description":"Same deliciousness as the original Mob Meal, 95% less fat - what could be better?",
-	        "long_description":"Our paleo focused meal combines lean protein with two servings of vegetables.  Our delicious BBQ chicken, served alongside the roasted broccoli and the beets and carrots.  Cave men never ate this good!",
-	        "price":"13",
-	        "picture":"images/missing_menu.png",
+	        "name" : "Roasted Pork Chop",
+	        "short_description":"",
+	        "long_description":"",
+	        "price":"6",
+	        "picture":"pork.png",
 	        "uid" : "5",
 	        "nutrition_info" : {
 	            "calories" : "600",
