@@ -4,21 +4,68 @@ Stripe.initialize('sk_test_0eORjVUmVNJxwTHqMLLCogZr');
 
 var STRIPE_ID = "stripe_id";
 
+Parse.Cloud.define("location", function(request,response){
+	var query = new Parse.Query("Location");
+	query.find({
+		success: function(results){
+			return response.success(results);
+		},
+		error: function(error){
+			return response.error(error);
+		}
+	});
+});
+
+Parse.Cloud.define("charity",function(request,response){
+	var query = new Parse.Query("Charity");
+	query.find({
+		success: function(results){
+			return response.success(results);
+		},
+		error: function(error){
+			return response.error(error);
+		}
+	});
+});
+
 /*
 Web Service to place an order. Requires the following json structure:
 {
 	userId : <parse user id>, (String)
-	pickupId : <location id>, (String)
+	locationId : <location id>, (String)
 	orderItems : { (Dictionary)
 		<menu item id> = <quantity>
 	},
 	couponId : <coupon id> (String)
 }
-
 */
 Parse.Cloud.define("order", function(request,response){
 	console.log("received order : " + request);
 
+
+	//error checking should also verify that the userid & locationid are valid values
+	if(request.params.userId == null)
+		return response.error("No user id provided with order.");
+
+	if(request.params.locationId == null)
+		return response.error("No location id provided with order.");
+
+	if(request.params.orderItems == null)
+		return response.error("No items provided with order.");
+
+	/*
+	- Things to be done when an order is sent:
+	1. find user object to get the stripe token
+	2. lookup inventory at location to ensure enough stock
+	3. update inventory & charge card
+	   TRANSACTION
+	   a. decrement stock at location for all items in order
+	   b. call stripe to charge card
+	   END TRANSACTION
+   	4. send receipt
+   	5. update user order history with order
+   	6. 
+	*/
 	var query = new Parse.Query(Parse.User);
 	var stripeId;
 	query.get(request.params.userId, {
