@@ -1,11 +1,20 @@
 
 var Stripe = require ('stripe');
+var _ = require('underscore');
 Stripe.initialize('sk_test_0eORjVUmVNJxwTHqMLLCogZr');
+
+var LocationItem = Parse.Object.extend("LocationItem");
+var Location = Parse.Object.extend("Location");
+var MenuItem = Parse.Object.extend("MenuItem");
+var OrderItem = Parse.Object.extend("OrderItem");
+var Order = Parse.Object.extend("Order");
+var User = Parse.Object.extend("User");
 
 var STRIPE_ID = "stripe_id";
 
 Parse.Cloud.define("location", function(request,response){
 	var query = new Parse.Query("Location");
+	query.include("charityId");
 	query.find({
 		success: function(results){
 			return response.success(results);
@@ -28,20 +37,52 @@ Parse.Cloud.define("charity",function(request,response){
 	});
 });
 
+Parse.Cloud.define("retrievemenu", function(request,response){
+	var query = new Parse.Query("MenuItem");
+	query.include("nutritionInfoId");
+	query.find({
+		success: function(results){
+			return response.success(results);
+		},
+		error: function(error){
+			return response.error(error);
+		}
+	});
+});
+
+Parse.Cloud.define("itemquantity", function(request,response){
+	var query = new Parse.Query("LocationItem");
+	query.equalTo("objectId",request.params.objectId);
+	query.find({
+		success: function(results){
+			return response.success(results[0].get("quantity"));
+		},
+		error: function(error){
+			return response.error(error);
+		}
+	});
+});
+
 /*
-Web Service to place an order. Requires the following json structure:
+Web Service to place an order. Requires an order object:
 {
-	userId : <parse user id>, (String)
-	locationId : <location id>, (String)
-	orderItems : { (Dictionary)
-		<menu item id> = <quantity>
-	},
-	couponId : <coupon id> (String)
+	userId : <User objectId>, 
+	locationId : <Location objectId>,
+	totalInCents: <order amount in USD cents>,
+	orderItemDictionary:
+		{
+			"SxftUkXojG":{"quantity":1},
+			"zNQHnmvC4r":{"quantity":1},
+			"wh9pDZaqm6":{"quantity":0},
+			"D6a4LyLvi7":{"quantity":1},
+			"u004g2tbaA":{"quantity":0}
+		}
+	}
 }
 */
 Parse.Cloud.define("order", function(request,response){
-	console.log("received order : " + request);
-
+	console.log("received order : " + request.params);
+	var locationId, userId, orderItems;
 
 	//error checking should also verify that the userid & locationid are valid values
 	if(request.params.userId == null)
@@ -50,11 +91,16 @@ Parse.Cloud.define("order", function(request,response){
 	if(request.params.locationId == null)
 		return response.error("No location id provided with order.");
 
-	if(request.params.orderItems == null)
+	if(request.params.orderItemDictionary == null)
 		return response.error("No items provided with order.");
 
 	/*
+
+	- have to write order first, & then create order items b/c they need a pointer to the order
+
 	- Things to be done when an order is sent:
+	1. create order object & save
+
 	1. find user object to get the stripe token
 	2. lookup inventory at location to ensure enough stock
 	3. update inventory & charge card
@@ -66,33 +112,121 @@ Parse.Cloud.define("order", function(request,response){
    	5. update user order history with order
    	6. 
 	*/
-	var query = new Parse.Query(Parse.User);
-	var stripeId;
-	query.get(request.params.userId, {
-		success: function(userObject){
-			console.log("found user object with email : " + userObject.get("email"));
-			stripeId = userObject.get("stripe_id");
-			console.log("stripe_id : " + stripeId);
 
-			return Parse.Promise.as().then(function(){
-					return Stripe.Charges.create({
-						amount: 10 * 100, //in cents
-						currency: 'usd',
-						customer: stripeId
-					}).then(null, function(error){
-						console.log("Error sending charge request to Stripe :  " + error);
-						return Parse.Promise.error("error");
-					});
-			}).then(function(purchase) {
-				console.log("purchase id : " + purchase.id);
-				response.success("success");
+	orderItems = request.params.orderItemDictionary;
+	userId = request.params.userId;
+	locationId = request.params.locationId;
+
+	var location = new Location();
+	location.set("id",locationId);
+
+	var user = new User();
+	user.set("id",userId);
+
+	var currentOrder = new Order();
+	currentOrder.set("locationId",location);
+	currentOrder.set("totalInCents",request.params.totalInCents);
+	currentOrder.set("userId",user);
+
+	var quantityAvailable = -1;
+
+	Parse.Promise.as().then(function(){
+		return currentOrder.save();
+	})
+	.then(function() {	
+		var promise = Parse.Promise.as();
+		_.each(orderItems,function(quantityObject, menuItemId, list){
+			
+			/*
+			This code does the following:
+				1) look up the location item from the menu item & location passed in the order
+				2) check the quantity for an item at a given location, if there's enough, decrement it by the order amount & save the LocationItem
+				3) retrieve the menu item 
+				4) create an order item
+			*/
+
+			promise = promise.then(
+				function(){
+					console.log("locationId : " + locationId);
+					console.log("menuItemId : " + menuItemId);
+					var menuItem = new MenuItem();
+					menuItem.set("id", menuItemId);
+
+					var query = new Parse.Query(LocationItem);
+					query.equalTo("locationId",location);
+					query.equalTo("menuItemId",menuItem);
+					return query.find();
+				}
+			).then(
+				function(results){
+					console.log("results length should be 1 : " + results.length);
+					console.log("quantity ordered : " + parseInt(quantityObject['quantity']));
+
+					var quantity = parseInt(quantityObject['quantity']);
+
+					if(results.length == 0){
+						return Parse.Promise.error("error - no items found");
+					}
+
+					var item = results[0];
+
+					if(item.get("quantity") < quantity){
+						return Parse.Promise.error("No stock for item : " + item.get("menuItemId"));
+					}
+					item.increment("quantity",(-quantity));
+					return item.save();
+				}
+			).then(
+				function(locationItem){
+					var menuItem = new MenuItem();
+					menuItem.set("id",locationItem.get("menuItemId"));
+					var query = new Parse.Query(MenuItem);
+					return query.get(menuItemId);
+				}
+			).then(
+				function(menuItem){
+					console.log("menu item retireved with name :" + menuItem.get("name"));
+					console.log("menu item with quantity : " + quantityObject['quantity']);
+					var orderItem = new OrderItem();
+					orderItem.set("menuItemId",menuItem);
+					orderItem.set("quantity",parseInt(quantityObject['quantity']));
+					orderItem.set("orderId",currentOrder);
+					return orderItem.save();
+				}
+			);
+		});
+		return promise;
+	}).then(
+		function(){
+			var query = new Parse.Query(Parse.User);
+			return query.get(userId);
+		}
+	).then(
+		function(userObject){
+			stripeId = userObject.get("stripeId");
+			return Stripe.Charges.create({
+					amount: 10 * 100, //in cents
+					currency: 'usd',
+					customer: stripeId
 			});
 		},
-		error: function(object,error){
-			console.log("error retrieving user with id : " + parseId);
-			return Parse.Promise.error("error finding user with email (" + customer.email + ") and id (" + parseId + ")");
+		function(error){
+			console.log("error retrieving user : " + error);
+			return Parse.Promise.error("error finding user with id (" + userId + ")");
 		}
-	});
+	).then(
+		function(purchase){
+			console.log("purchase id : " + purchase.id);
+			response.success("success");
+		},
+		function(error){
+			console.log("Error sending charge request to Stripe :  " + error);
+			return response.error(error);
+		}
+	);
+});
+
+	// });
 	/*Parse.Promise.as().then(function() {
 		return Stripe.Charges.create({
 	      amount: 10 * 100, // express dollars in cents 
@@ -236,7 +370,7 @@ Parse.Cloud.define("order", function(request,response){
     response.error(error);
   });
 */
-});
+// });
 
 //Things to do:
 	//1. Call Stripe to save customer data
@@ -295,77 +429,4 @@ Parse.Cloud.define("createuser", function(request,response){
 			console.log("customer object propagated email : " + customer.email);
 		});
 	});
-});
-
-/*
-
-
-*/
-Parse.Cloud.define("retrievemenu", function(request,response){
-	// console.log("sending updated menu");
-	response.success(
-	[
-	    {   
-	        "name" : "BBQ Chicken",
-	        "long_description":"Succulent bbq chicken.",
-	        "price":"6",
-	        "type":"3",
-	        "picture":"chicken.png",
-	        "uid" : "1",
-	        "nutrition_info" : {
-	            "calories" : "600",
-	            "protein" : "40",
-	            "carbs" : "30"
-	        }
-	    },
-	    {   
-	        "name" : "Roasted Cauliflower",     
-	        "long_description":"",
-	        "price":"2",
-	        "picture":"cauliflower.png",
-	        "uid" : "2",
-	        "nutrition_info" : {
-	            "calories" : "600",
-	            "protein" : "40",
-	            "carbs" : "30"
-	        }
-	    },
-	    {   
-	        "name" : "Turkey Meatballs, Garden Veg Sauce",
-	        "long_description":"",
-	        "price":"10",
-	        "picture":"pasta.png",
-	        "uid" : "3",
-	        "nutrition_info" : {
-	            "calories" : "600",
-	            "protein" : "40",
-	            "carbs" : "30"
-	        }
-	    },
-	    {   
-	        "name" : "Carrots + Turnips",
-	        "long_description":"",
-	        "price":"2",
-	        "picture":"carrots_turnips.png",
-	        "uid" : "4",
-	        "nutrition_info" : {
-	            "calories" : "600",
-	            "protein" : "40",
-	            "carbs" : "30"
-	        }
-	    },
-	    {   
-	        "name" : "Roasted Pork Chop",
-	        "short_description":"",
-	        "long_description":"",
-	        "price":"6",
-	        "picture":"pork.png",
-	        "uid" : "5",
-	        "nutrition_info" : {
-	            "calories" : "600",
-	            "protein" : "40",
-	            "carbs" : "30"
-	        }
-	    }
-	]);
 });
