@@ -16,19 +16,39 @@ class AcceptanceTest(unittest.TestCase):
 	# 	response = ParseClient().call_function('order', { 'userId' : '3', 'locationId' : '3' })
 	# 	assert response['error'] == 'No items provided with order.'
 
-	def test_LOCATION_ITEM_quantity(self):
+	def test_No_stock_left_for_first_item_in_order(self):
 		response = ParseClient().call_function('order', 
 			{ 
-				'userId' : 'vgzEGVAfCU', 
-				'locationId' : 'jYkEfbIMov', 
+				'userId' : 'P41AIRwYNa', 
+				'locationId' : 'AaoWcS3rwi',
+				'totalInCents' : 899, 
 				'orderItemDictionary' : 
 				{
-					'JO2eEQaQAS' : {'quantity' : '1'},
-					'zNQHnmvC4r' : {'quantity' : '1'}
+					'CrXkzvBWTk' : {'quantity' : '1'},
 				}
 			})
-		assert response['result'] == 24
+		assert response['error'][0] == 'No items left for item : zNQHnmvC4r'
 
+		{"totalInCents":899,"locationId":"AaoWcS3rwi","orderItemDictionary":{"CrXkzvBWTk":{"quantity":1}},"userId":"P41AIRwYNa"}	
+
+	# def test_Passing_locationId_retrievemenu_returns_locationItem(self):
+	# 	response = ParseClient().call_function('getlocation', 
+	# 		{ 
+	# 			'objectId' : 'jYkEfbIMov'
+	# 		})
+	# 	assert response['result'] == 24
+
+	# def test_Credit_Card_Declined(self):
+	# 	response = ParseClient().call_function('order', 
+	# 		{ 
+	# 			'userId' : 'exJYb6AxNV', 
+	# 			'locationId' : 'jYkEfbIMov', 
+	# 			'orderItemDictionary' : 
+	# 			{
+	# 				'JO2eEQaQAS' : {'quantity' : '1'},
+	# 				'zNQHnmvC4r' : {'quantity' : '1'}
+	# 			}
+	# 		})
  # 	def test_should_call_hello_function(self):
  #   	response = ParseClient().call_function('hello', {})
  #   	assert response['result'] == 'world'

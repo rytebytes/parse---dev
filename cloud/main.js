@@ -1,6 +1,12 @@
 
 var Stripe = require ('stripe');
 var _ = require('underscore');
+var inventory = require('cloud/inventory_report.js');
+var Mandrill = require('mandrill');
+
+//Init Modules
+Mandrill.initialize('KAszMl4utMaqTKy-ROWTcw');
+
 Stripe.initialize('sk_test_0eORjVUmVNJxwTHqMLLCogZr');
 
 var LocationItem = Parse.Object.extend("LocationItem");
@@ -9,6 +15,13 @@ var MenuItem = Parse.Object.extend("MenuItem");
 var OrderItem = Parse.Object.extend("OrderItem");
 var Order = Parse.Object.extend("Order");
 var User = Parse.Object.extend("User");
+
+//This object has two properties
+//  - message : a message to return to caller
+//	- code : an error code specifying what happened so error handlers can react appropriately
+//		- 01 - an item in the 
+var OrderingError = Parse.Object.extend("OrderingError");
+
 
 var STRIPE_ID = "stripe_id";
 
@@ -38,16 +51,38 @@ Parse.Cloud.define("charity",function(request,response){
 });
 
 Parse.Cloud.define("retrievemenu", function(request,response){
-	var query = new Parse.Query("MenuItem");
-	query.include("nutritionInfoId");
-	query.find({
-		success: function(results){
-			return response.success(results);
-		},
-		error: function(error){
-			return response.error(error);
-		}
-	});
+
+	if(request.params.locationId){
+		var query = new Parse.Query(LocationItem);
+		query.include("menuItemId");
+		query.include("menuItemId.nutritionInfoId");
+
+		console.log("retrieve location menu for : " + request.params.locationId);
+		var location = new Location();
+		location.set("id",request.params.locationId);
+
+		query.equalTo("locationId",location);
+		
+		query.find({
+			success: function(results){
+				return response.success(results);
+			},
+			error: function(error){
+				return response.error(error);
+			}
+		});
+	} else{
+		var query = new Parse.Query(MenuItem);
+		query.include("nutritionInfoId");
+		query.find({
+			success: function(results){
+				return response.success(results);
+			},
+			error: function(error){
+				return response.error(error);
+			}
+		});
+	}
 });
 
 Parse.Cloud.define("itemquantity", function(request,response){
@@ -55,7 +90,32 @@ Parse.Cloud.define("itemquantity", function(request,response){
 	query.equalTo("objectId",request.params.objectId);
 	query.find({
 		success: function(results){
-			return response.success(results[0].get("quantity"));
+			if(results.length > 0){
+				return response.success(results[0].get("quantity"));	
+			}
+			else{
+				return response.success("no item found for objectId : " + request.params.objectId);
+			}
+			
+		},
+		error: function(error){
+			return response.error(error);
+		}
+	});
+});
+
+Parse.Cloud.define("getlocation", function(request,response){
+	var query = new Parse.Query(Location);
+	query.equalTo("objectId",request.params.objectId);
+	query.include("charityId");
+	query.find({
+		success: function(results){
+			if(results.length > 0){
+				return response.success(results);
+			}
+			else{
+				return response.error("No location found with objectId : " + request.params.objectId);
+			}
 		},
 		error: function(error){
 			return response.error(error);
@@ -95,9 +155,7 @@ Parse.Cloud.define("order", function(request,response){
 		return response.error("No items provided with order.");
 
 	/*
-
 	- have to write order first, & then create order items b/c they need a pointer to the order
-
 	- Things to be done when an order is sent:
 	1. create order object & save
 
@@ -112,6 +170,8 @@ Parse.Cloud.define("order", function(request,response){
    	5. update user order history with order
    	6. 
 	*/
+
+	var orderingError;
 
 	orderItems = request.params.orderItemDictionary;
 	userId = request.params.userId;
@@ -130,113 +190,222 @@ Parse.Cloud.define("order", function(request,response){
 
 	var quantityAvailable = -1;
 
-	Parse.Promise.as().then(function(){
+	Parse.Promise.as().then(function(){ //save the current order object
 		return currentOrder.save();
 	})
-	.then(function() {	
-		var promise = Parse.Promise.as();
-		_.each(orderItems,function(quantityObject, menuItemId, list){
-			
-			/*
-			This code does the following:
-				1) look up the location item from the menu item & location passed in the order
-				2) check the quantity for an item at a given location, if there's enough, decrement it by the order amount & save the LocationItem
-				3) retrieve the menu item 
-				4) create an order item
-			*/
+	.then(
+		function(currentOrder) {
+			console.log("new order id : " + currentOrder.id);
+			var promise = Parse.Promise.as();
+			_.each(orderItems,function(quantityObject, menuItemId, list){
+				
+				/*
+				This code does the following:
+					1) retrieve the menu item 
+					2) create an order item
+					3) look up the location item from the menu item & location passed in the order
+					4) check the quantity for an item at a given location, if there's enough, decrement it by the order amount & save the LocationItem
 
-			promise = promise.then(
-				function(){
-					console.log("locationId : " + locationId);
-					console.log("menuItemId : " + menuItemId);
-					var menuItem = new MenuItem();
-					menuItem.set("id", menuItemId);
+				The order item objects are created before modifying the quantity on the location item object to ensure error handling can properly clean up
+				if the order doesn't complete successfully.  The error handler at the bottom, will iterate over all order items for the order and both delete the order
+				item and reset the quantity on the location item to what it was before, since this order is not being completed.  This way, the error handler will always adjust
+				quantities for only items that have an order item entry.  This means that in the block below that adjusts quantities - if there isn't enough available, the quantity 
+				will still be adjusted (even if the number goes negative) so that the error handler will adjust it appropriately.
+				*/
+				var quantityOrdered = parseInt(quantityObject['quantity']);
+				var startQuantity;
+				var menuItem = new MenuItem();
+				menuItem.set("id",menuItemId);
 
-					var query = new Parse.Query(LocationItem);
-					query.equalTo("locationId",location);
-					query.equalTo("menuItemId",menuItem);
-					return query.find();
-				}
-			).then(
-				function(results){
-					console.log("results length should be 1 : " + results.length);
-					console.log("quantity ordered : " + parseInt(quantityObject['quantity']));
+				promise = promise.then(//create an order item
+					function(){
+						console.log("Creating order item for menuItem : (" + menuItemId + ") with a quantity of : " + quantityOrdered);
+						var orderItem = new OrderItem();
 
-					var quantity = parseInt(quantityObject['quantity']);
-
-					if(results.length == 0){
-						return Parse.Promise.error("error - no items found");
+						orderItem.set("menuItemId",menuItem);
+						orderItem.set("quantity",quantityOrdered);
+						orderItem.set("orderId",currentOrder);
+						return orderItem.save();
 					}
-
-					var item = results[0];
-
-					if(item.get("quantity") < quantity){
-						return Parse.Promise.error("No stock for item : " + item.get("menuItemId"));
+				).then(
+					function(orderItem){ //find the location item for the menu item passed in
+						console.log("find location item");
+						var query = new Parse.Query(LocationItem);
+						query.equalTo("locationId",location);
+						query.equalTo("menuItemId",menuItem);
+						query.include("menuItemId");
+						return query.first();
 					}
-					item.increment("quantity",(-quantity));
-					return item.save();
-				}
-			).then(
-				function(locationItem){
-					var menuItem = new MenuItem();
-					menuItem.set("id",locationItem.get("menuItemId"));
-					var query = new Parse.Query(MenuItem);
-					return query.get(menuItemId);
-				}
-			).then(
-				function(menuItem){
-					console.log("menu item retireved with name :" + menuItem.get("name"));
-					console.log("menu item with quantity : " + quantityObject['quantity']);
-					var orderItem = new OrderItem();
-					orderItem.set("menuItemId",menuItem);
-					orderItem.set("quantity",parseInt(quantityObject['quantity']));
-					orderItem.set("orderId",currentOrder);
-					return orderItem.save();
-				}
-			);
-		});
-		return promise;
-	}).then(
+				).then( //update the quantity for the location item
+					function(locationItem){
+						startQuantity = locationItem.get("quantity");
+						console.log("Modifying locationItem quantity.");
+						console.log("Before adjustment: " + startQuantity);
+						locationItem.increment("quantity",(-quantityOrdered));
+						console.log("After adjustment: " + locationItem.get("quantity"));
+
+						return locationItem.save();
+					}
+				).then(
+					function(locationItem){
+						if(startQuantity < quantityOrdered){
+							return Parse.Promise.error("<" + menuItemId + "> is currently sold out! Try again soon!");
+						}
+						return Parse.Promise();
+					}
+				);
+			});
+			return promise;
+		}
+	).then(
 		function(){
 			var query = new Parse.Query(Parse.User);
 			return query.get(userId);
+		},
+		function(error){
+			return error;
 		}
 	).then(
 		function(userObject){
 			stripeId = userObject.get("stripeId");
 			return Stripe.Charges.create({
-					amount: 10 * 100, //in cents
+					amount: request.params.totalInCents, //in cents
 					currency: 'usd',
 					customer: stripeId
 			});
 		},
 		function(error){
-			console.log("error retrieving user : " + error);
-			return Parse.Promise.error("error finding user with id (" + userId + ")");
+			return error;
 		}
 	).then(
 		function(purchase){
 			console.log("purchase id : " + purchase.id);
+			currentOrder.set("stripePurchaseId",purchase.id);
+			currentOrder.save();
 			response.success("success");
 		},
+		function(error){ 
+			//1. get order items, grab quant, delete
+			//2. adjust location item quantity
+			//3. delete order
+			console.log("Error during order :  " + error.message);
+			console.log("Removing data for orderId : " + currentOrder.id);
+
+			orderingError = error;
+
+			var promise = Parse.Promise.as();
+
+			var query = new Parse.Query("OrderItem");
+			query.equalTo("orderId",currentOrder);
+
+			return query.find();
+		}
+	).then(
+		function(orderItemsToDelete){ //should only be here if we have order items to delete
+			var promise = Parse.Promise.as();
+			_.each(orderItemsToDelete, function(orderItem,index,listOfItems){
+				promise = promise.then(
+					function(){
+						// console.log("deleting order item with id " + orderItem.id + ", menuItemId of " + orderItem.get("menuItemId")+ "and quantity of " + orderItem.get("quantity"));
+						return orderItem.destroy();
+					}
+				).then(null,function(error){
+					console.log("error deleting order item : " + error.message);
+					return Parse.Promise.error();
+				});
+			});
+			return promise;
+		}
+	).then(
+		function(){
+			return currentOrder.destroy();
+		}
+	).then(
+		function(){
+			console.log("orderingError : " + orderingError);
+			return response.error(orderingError);
+		},
 		function(error){
-			console.log("Error sending charge request to Stripe :  " + error);
 			return response.error(error);
 		}
 	);
 });
 
-	// });
-	/*Parse.Promise.as().then(function() {
-		return Stripe.Charges.create({
-	      amount: 10 * 100, // express dollars in cents 
-	      currency: 'usd',
-	      card: request.params.cardToken
-	    }).then(null, function(error) {
-	      console.log('Charging with stripe failed. Error: ' + error);
-	      return Parse.Promise.error('An error has occurred. Your credit card was not charged.');
-	    });
-    })*/
+
+Parse.Cloud.beforeDelete("OrderItem",function(request,response){
+	var orderItem = request.object;
+	var userId;
+	console.log("Delete Order Item Id: " + orderItem.id + " of menuItem : " + orderItem.get("menuItemId").id + " with quantity : " + orderItem.get("quantity"));
+
+
+	var order = new Order();
+	order.id = orderItem.get("orderId").id;
+
+	var orderQuery = new Parse.Query(Order);
+	orderQuery.include("locationId");
+
+	Parse.Promise.as().then(
+		function(){
+			console.log("order query");
+			console.log("order id : " + order.id);
+			return orderQuery.get(order.id);
+		}		
+	).then(
+		function(order){
+			console.log("location id of order to delete : " + order.get("locationId").id);
+			userId = order.get("userId").id;
+			
+			console.log("after query - order id of order item :" + order.id);
+			var query = new Parse.Query("LocationItem");
+			query.equalTo("locationId",order.get("locationId"));
+			query.equalTo("menuItemId",orderItem.get("menuItemId"));
+			return query.find();
+		}
+	).then(
+		function(results){
+			var locationItem = results[0];
+			var quantityBeforeAdjust = locationItem.get("quantity");
+			var quantityOrdered = orderItem.get("quantity");
+			//console.log("locationItem results, should be 1 : " + results.length);
+			console.log("Changing quantity on locationItem from : " + quantityBeforeAdjust + " to : (" + quantityBeforeAdjust + " + " + quantityOrdered + ")");
+			locationItem.increment("quantity",quantityOrdered);
+			console.log("New locationItem quantity : " + locationItem.get("quantity") + " with id : " + locationItem.get("id"));
+			locationItem.save();
+
+			Mandrill.sendEmail(
+				{
+					message: {
+						subject: "Parse:CC Failure",
+						from_email:"parse@myrytebytes.com",
+						text:"User : " + userId + "\n" +
+							 "MenuItemId : " + orderItem.get("menuItemId").id + "\n" +
+							 "LocationId : " + locationItem.get("locationId").id + "\n" +
+							 "Quantity before adjustment : " + quantityBeforeAdjust + "\n" +
+							 "Quantity ordered : " + quantityOrdered
+						,
+						to: [
+							{
+								email:"nick@myrytebytes.com",
+								name:"Nick"
+							}
+						]
+					},
+					async:true
+				},
+				{
+					success:function(httpResponse){},
+					error:function(httpResponse){}
+				}
+			);
+
+			response.success();
+		},
+		function(error){
+			console.log("Error in beforeDelete : " + error.message);
+			response.error("Error finding order item with error : " + error.message);
+		}
+	)
+});
 
 	/*Parse.Promise.as().then(function() {
     // Find the item to purchase.
