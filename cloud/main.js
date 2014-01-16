@@ -281,7 +281,12 @@ Parse.Cloud.define("order", function(request,response){
 		function(purchase){
 			console.log("purchase id : " + purchase.id);
 			currentOrder.set("stripePurchaseId",purchase.id);
-			currentOrder.save();
+			return currentOrder.save();
+		}
+	).then(
+		function(order){
+			console.log("saved order id : " + order.id);
+			console.log("stripe purchase id : " + order.get("stripePurchaseId"));
 			response.success("success");
 		},
 		function(error){ 
@@ -298,37 +303,38 @@ Parse.Cloud.define("order", function(request,response){
 			var query = new Parse.Query("OrderItem");
 			query.equalTo("orderId",currentOrder);
 
-			return query.find();
+			return query.find().then(
+				function(orderItemsToDelete){ //should only be here if we have order items to delete
+					var promise = Parse.Promise.as();
+					_.each(orderItemsToDelete, function(orderItem,index,listOfItems){
+						promise = promise.then(
+							function(){
+								// console.log("deleting order item with id " + orderItem.id + ", menuItemId of " + orderItem.get("menuItemId")+ "and quantity of " + orderItem.get("quantity"));
+								return orderItem.destroy();
+							}
+						).then(null,function(error){
+							console.log("error deleting order item : " + error.message);
+							return Parse.Promise.error();
+						});
+					});
+					return promise;
+				}
+			).then(
+				function(){
+					console.log("destroying order");
+					return currentOrder.destroy();
+				}
+			).then(
+				function(){
+					console.log("orderingError : " + orderingError);
+					return response.error(orderingError.message);
+				},
+				function(error){
+					return response.error(error);
+				}
+			);
 		}
-	).then(
-		function(orderItemsToDelete){ //should only be here if we have order items to delete
-			var promise = Parse.Promise.as();
-			_.each(orderItemsToDelete, function(orderItem,index,listOfItems){
-				promise = promise.then(
-					function(){
-						// console.log("deleting order item with id " + orderItem.id + ", menuItemId of " + orderItem.get("menuItemId")+ "and quantity of " + orderItem.get("quantity"));
-						return orderItem.destroy();
-					}
-				).then(null,function(error){
-					console.log("error deleting order item : " + error.message);
-					return Parse.Promise.error();
-				});
-			});
-			return promise;
-		}
-	).then(
-		function(){
-			return currentOrder.destroy();
-		}
-	).then(
-		function(){
-			console.log("orderingError : " + orderingError);
-			return response.error(orderingError);
-		},
-		function(error){
-			return response.error(error);
-		}
-	);
+	)
 });
 
 
@@ -370,41 +376,43 @@ Parse.Cloud.beforeDelete("OrderItem",function(request,response){
 			console.log("Changing quantity on locationItem from : " + quantityBeforeAdjust + " to : (" + quantityBeforeAdjust + " + " + quantityOrdered + ")");
 			locationItem.increment("quantity",quantityOrdered);
 			console.log("New locationItem quantity : " + locationItem.get("quantity") + " with id : " + locationItem.get("id"));
-			locationItem.save();
+			locationItem.save().then(
+				function(savedLocationItem){
+					Mandrill.sendEmail(
+						{
+							message: {
+								subject: "Parse:CC Failure",
+								from_email:"parse@myrytebytes.com",
+								text:"User : " + userId + "\n" +
+									 "MenuItemId : " + orderItem.get("menuItemId").id + "\n" +
+									 "LocationId : " + locationItem.get("locationId").id + "\n" +
+									 "Quantity before adjustment : " + quantityBeforeAdjust + "\n" +
+									 "Quantity ordered : " + quantityOrdered
+								,
+								to: [
+									{
+										email:"nick@myrytebytes.com",
+										name:"Nick"
+									}
+								]
+							},
+							async:true
+						},
+						{
+							success:function(httpResponse){},
+							error:function(httpResponse){}
+						}
+					);
 
-			Mandrill.sendEmail(
-				{
-					message: {
-						subject: "Parse:CC Failure",
-						from_email:"parse@myrytebytes.com",
-						text:"User : " + userId + "\n" +
-							 "MenuItemId : " + orderItem.get("menuItemId").id + "\n" +
-							 "LocationId : " + locationItem.get("locationId").id + "\n" +
-							 "Quantity before adjustment : " + quantityBeforeAdjust + "\n" +
-							 "Quantity ordered : " + quantityOrdered
-						,
-						to: [
-							{
-								email:"nick@myrytebytes.com",
-								name:"Nick"
-							}
-						]
-					},
-					async:true
-				},
-				{
-					success:function(httpResponse){},
-					error:function(httpResponse){}
+					response.success();
 				}
-			);
-
-			response.success();
+			);	
 		},
 		function(error){
 			console.log("Error in beforeDelete : " + error.message);
 			response.error("Error finding order item with error : " + error.message);
 		}
-	)
+	);
 });
 
 	/*Parse.Promise.as().then(function() {
