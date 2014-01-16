@@ -238,13 +238,17 @@ Parse.Cloud.define("order", function(request,response){
 					}
 				).then( //update the quantity for the location item
 					function(locationItem){
-						startQuantity = locationItem.get("quantity");
-						console.log("Modifying locationItem quantity.");
-						console.log("Before adjustment: " + startQuantity);
-						locationItem.increment("quantity",(-quantityOrdered));
-						console.log("After adjustment: " + locationItem.get("quantity"));
+						if(null == locationItem){
+							return Parse.Promise.error("<" + menuItemId + "> not available at the selected location.");
+						} else {
+							startQuantity = locationItem.get("quantity");
+							console.log("Modifying locationItem quantity.");
+							console.log("Before adjustment: " + startQuantity);
+							locationItem.increment("quantity",(-quantityOrdered));
+							console.log("After adjustment: " + locationItem.get("quantity"));
 
-						return locationItem.save();
+							return locationItem.save();
+						}
 					}
 				).then(
 					function(locationItem){
@@ -327,7 +331,7 @@ Parse.Cloud.define("order", function(request,response){
 			).then(
 				function(){
 					console.log("orderingError : " + orderingError);
-					return response.error(orderingError.message);
+					return response.error(orderingError);
 				},
 				function(error){
 					return response.error(error);
@@ -370,43 +374,48 @@ Parse.Cloud.beforeDelete("OrderItem",function(request,response){
 	).then(
 		function(results){
 			var locationItem = results[0];
-			var quantityBeforeAdjust = locationItem.get("quantity");
-			var quantityOrdered = orderItem.get("quantity");
-			//console.log("locationItem results, should be 1 : " + results.length);
-			console.log("Changing quantity on locationItem from : " + quantityBeforeAdjust + " to : (" + quantityBeforeAdjust + " + " + quantityOrdered + ")");
-			locationItem.increment("quantity",quantityOrdered);
-			console.log("New locationItem quantity : " + locationItem.get("quantity") + " with id : " + locationItem.get("id"));
-			locationItem.save().then(
-				function(savedLocationItem){
-					Mandrill.sendEmail(
-						{
-							message: {
-								subject: "Parse:CC Failure",
-								from_email:"parse@myrytebytes.com",
-								text:"User : " + userId + "\n" +
-									 "MenuItemId : " + orderItem.get("menuItemId").id + "\n" +
-									 "LocationId : " + locationItem.get("locationId").id + "\n" +
-									 "Quantity before adjustment : " + quantityBeforeAdjust + "\n" +
-									 "Quantity ordered : " + quantityOrdered
-								,
-								to: [
-									{
-										email:"nick@myrytebytes.com",
-										name:"Nick"
-									}
-								]
+			if(locationItem != null){ //if location item is null, that means an order was placed for an item not present at a location (this is different than being available, but sold out)
+				var quantityBeforeAdjust = locationItem.get("quantity");
+				var quantityOrdered = orderItem.get("quantity");
+				//console.log("locationItem results, should be 1 : " + results.length);
+				console.log("Changing quantity on locationItem from : " + quantityBeforeAdjust + " to : (" + quantityBeforeAdjust + " + " + quantityOrdered + ")");
+				locationItem.increment("quantity",quantityOrdered);
+				console.log("New locationItem quantity : " + locationItem.get("quantity") + " with id : " + locationItem.get("id"));
+				locationItem.save().then(
+					function(savedLocationItem){
+						Mandrill.sendEmail(
+							{
+								message: {
+									subject: "Parse:CC Failure",
+									from_email:"parse@myrytebytes.com",
+									text:"User : " + userId + "\n" +
+										 "MenuItemId : " + orderItem.get("menuItemId").id + "\n" +
+										 "LocationId : " + locationItem.get("locationId").id + "\n" +
+										 "Quantity before adjustment : " + quantityBeforeAdjust + "\n" +
+										 "Quantity ordered : " + quantityOrdered
+									,
+									to: [
+										{
+											email:"nick@myrytebytes.com",
+											name:"Nick"
+										}
+									]
+								},
+								async:true
 							},
-							async:true
-						},
-						{
-							success:function(httpResponse){},
-							error:function(httpResponse){}
-						}
-					);
+							{
+								success:function(httpResponse){},
+								error:function(httpResponse){}
+							}
+						);
 
-					response.success();
-				}
-			);	
+						response.success();
+					}
+				);
+			}
+			else {
+				response.success();
+			}	
 		},
 		function(error){
 			console.log("Error in beforeDelete : " + error.message);
