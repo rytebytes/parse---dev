@@ -7,7 +7,8 @@ var Mandrill = require('mandrill');
 //Init Modules
 Mandrill.initialize('KAszMl4utMaqTKy-ROWTcw');
 
-Stripe.initialize('sk_test_0eORjVUmVNJxwTHqMLLCogZr');
+// Stripe.initialize('sk_test_0eORjVUmVNJxwTHqMLLCogZr');
+Stripe.initialize('sk_live_Bq60JoiLVW4UuubynRCqMFh4');
 
 var LocationItem = Parse.Object.extend("LocationItem");
 var Location = Parse.Object.extend("Location");
@@ -190,9 +191,30 @@ Parse.Cloud.define("order", function(request,response){
 
 	var quantityAvailable = -1;
 
-	Parse.Promise.as().then(function(){ //save the current order object
-		return currentOrder.save();
-	})
+	var query = new Parse.Query(Parse.User);
+
+
+	Parse.Promise.as().then(
+		function(){
+			return query.get(userId);
+		}
+	).then(
+		function(parseUser){
+			var stripeId = parseUser.get("stripeId");
+			console.log("stripe id : " + parseUser.get("stripeId"));
+			console.log(stripeId.substring(0,3));
+			if(stripeId.substring(0,3) == "tok") {//there was an error saving cc info to Stripe
+				console.log("problem with cc data.");
+				response.error("Error with credit card data, please go to the 'My Account' tab and update your information.");
+			} else {
+				return new Parse.Promise.as();
+			}
+		}
+	).then(
+		function(){ //save the current order object
+			return currentOrder.save();
+		}
+	)
 	.then(
 		function(currentOrder) {
 			console.log("new order id : " + currentOrder.id);
@@ -275,7 +297,9 @@ Parse.Cloud.define("order", function(request,response){
 			return Stripe.Charges.create({
 					amount: request.params.totalInCents, //in cents
 					currency: 'usd',
-					customer: stripeId
+					customer: stripeId,
+					description: 'Thanks for your purchase of RyteBytes! Remember to keep frozen until ready to heat!\n' +
+								 'We donate 10% of our profits to your local food bank!' 
 			});
 		},
 		function(error){
@@ -331,7 +355,13 @@ Parse.Cloud.define("order", function(request,response){
 			).then(
 				function(){
 					console.log("orderingError : " + orderingError);
-					return response.error(orderingError);
+					if(orderingError.message == null)
+						return response.error(orderingError);
+					else if(orderingError.message == "Your card was declined.")
+						return response.error(orderingError.message);
+					else
+						return response.error("Unknown error, please try again.");
+						
 				},
 				function(error){
 					return response.error(error);
@@ -422,6 +452,136 @@ Parse.Cloud.beforeDelete("OrderItem",function(request,response){
 			response.error("Error finding order item with error : " + error.message);
 		}
 	);
+});
+
+//Update stripe info for user
+Parse.Cloud.define("updateuser",function(request,response){
+	Parse.Cloud.useMasterKey();
+	console.log("update user : " + request.params.userId);
+	console.log("token : " + request.params.token);
+	console.log("stripeId : " + request.params.stripeId);
+
+	var query = new Parse.Query(Parse.User);
+	Parse.Promise.as().then(
+		function(){
+			return query.get(request.params.userId);
+		}
+	).then(
+		function(parseUser){
+			console.log(request.params.token.substring(0,3));
+			if(request.params.token.substring(0,3) == "tok") {//there was an error saving cc info to Stripe originally, so no customer object exists, now try and create with new data
+				var customerRequestObject = {
+					card : request.params.token,
+					email : parseUser.get("email"),	
+				}
+
+				return Stripe.Customers.create(customerRequestObject)
+				.then(
+					function(stripeUser){
+						console.log("Setting stripeId of " + stripeUser.id + " for userId : " + request.params.userId);
+						parseUser.set("stripeId", stripeUser.id);
+						return parseUser.save();
+					}
+				);
+			}
+			else {
+				return Stripe.Customers.update(request.params.stripeId,{
+					card : request.params.token
+				});
+			}
+		}
+	).then(
+		function(stripeUser){
+			console.log("successully updated stripe info for user : " + request.params.userId);
+			return response.success("success");
+		},
+		function(error){
+			var errorMsg = "Error saving credit card data - please check the values and try again.";
+			if(error.message && error.message != ""){
+				errorMsg = error.message;
+			}
+			console.log("error saving info in parse : " + error.message);
+			return response.error(errorMsg);
+		}
+	);
+});
+
+//Return stripe customer info for user
+Parse.Cloud.define("userinfo",function(request,response){
+	console.log("retrieve stripe info for user : " + request.params.userId);
+
+	var query = new Parse.Query(Parse.User);
+	Parse.Promise.as().then(
+		function(){
+			return query.get(request.params.userId);
+		}
+	).then(
+		function(user){
+			console.log("stripeId for user : " + user.get("stripeId"));
+			return Stripe.Customers.retrieve(user.get("stripeId"));
+		},
+		function(error){
+			console.log("error retrieving user : " + error.message);
+			return error;
+		}
+	).then(
+		function(stripeCustomer){
+			response.success(stripeCustomer);
+		},
+		function(error){
+			response.error("Error retrieving stripe information.");
+		}
+	);
+});
+
+//Things to do:
+	//1. Call Stripe to save customer data
+	//2. Verify success
+	//3. Query for user object & save with Stripe customer id
+	//4. Return result to caller
+Parse.Cloud.afterSave(Parse.User, function(request){
+	var user = request.object;
+
+	if(!user.existed()){
+		console.log("Creating new stripe customer with email of : " + user.get("email"));
+		console.log("User's token :" + user.get("stripeId"));
+
+		var parseId = user.id;
+		var stripeId = user.get("stripeId");
+
+		var customerRequestObject = {
+			card : stripeId,
+			email : user.get("email"),	
+		}
+
+		Parse.Promise.as().then(function() {
+			Stripe.Customers.create(customerRequestObject).then(
+				function(customer){
+					console.log("Created new customer object in Stripe with email: " + customer.email);
+					console.log("stripe customer id : " + customer.id);
+					return customer;
+				},
+				function(error){
+					console.log("stripe customer save failed : " + error.message);
+					return Parse.Promise.error("failed to save customer in Stripe");
+				}
+			).then(
+				function(customer){
+					//update user with stripe id here;
+					console.log("Setting stripe id (" + customer.id + ") on customer with email (" + customer.email + ") + parseId : " + parseId);
+					user.set("stripeId",customer.id);
+					return user.save();
+				}
+			).then(
+				function(newUser){
+					console.log("updated stripeId to : " + newUser.get("stripeId") + " for user with email : " + newUser.get("email"));
+				},
+				function(error){
+					console.log("error saving stripe info for user.");
+				}
+			);
+		});
+	}
 });
 
 	/*Parse.Promise.as().then(function() {
@@ -557,62 +717,28 @@ Parse.Cloud.beforeDelete("OrderItem",function(request,response){
   });
 */
 // });
+			// var query = new Parse.Query(Parse.User);
+			// query.get(parseId, {
+			// 	success: function(userObject){
+			// 		console.log("found user object with email : " + userObject.get("email"));
+			// 		userObject.set("stripe_id", customer.id);
+			// 		userObject.save().then(	
+			// 			function(parseCustomer)
+			// 			{
+			// 				console.log("Successfully saved stripe id to user object.");
+			// 				return response.success("successfully updated user with Stripe information.");
+			// 			},
+			// 			function(error)
+			// 			{
+			// 				console.log("Error saving stripe info to user object : " + error.message);
+			// 				return Parse.Promise.error("error saving stripe data to user.");
+			// 			}
+			// 		);
+			// 	},
+			// 	error: function(object,error){
+			// 		console.log("error retrieving user with id : " + parseId);
+			// 		return Parse.Promise.error("error finding user with email (" + customer.email + ") and id (" + parseId + ")");
+			// 	}
+			// });
+			// console.log("customer object propagated email : " + customer.email);
 
-//Things to do:
-	//1. Call Stripe to save customer data
-	//2. Verify success
-	//3. Query for user object & save with Stripe customer id
-	//4. Return result to caller
-Parse.Cloud.define("createuser", function(request,response){
-	console.log("Created new customer with email of : " + request.params.email);
-	console.log("User's Parse ID :" + request.params.id);
-
-	var parseId = request.params.id;
-	var stripeId;
-
-	var customerRequestObject = {
-		card : request.params.default_card,
-		email : request.params.email,	
-	}
-
-	Parse.Promise.as().then(function() {
-		Stripe.Customers.create(customerRequestObject).then(
-			function(customer){
-				console.log("Created new customer object in Stripe with email: " + customer.email);
-				console.log("stripe customer id : " + customer.id);
-				return customer;
-			},
-			function(error){
-				console.log("stripe customer save failed : " + error);
-				return Parse.Promise.error("failed to save customer in Stripe");
-			}
-		).then(function(customer){
-			//update user with stripe id here;
-			console.log("Setting stripe id (" + customer.id + ") on customer with email (" + customer.email + ") + parseId : " + parseId);
-			var query = new Parse.Query(Parse.User);
-			query.get(parseId, {
-				success: function(userObject){
-					console.log("found user object with email : " + userObject.get("email"));
-					userObject.set("stripe_id", customer.id);
-					userObject.save().then(	
-						function(parseCustomer)
-						{
-							console.log("Successfully saved stripe id to user object.");
-							return response.success("successfully updated user with Stripe information.");
-						},
-						function(error)
-						{
-							console.log("Error saving stripe info to user object : " + error.message);
-							return Parse.Promise.error("error saving stripe data to user.");
-						}
-					);
-				},
-				error: function(object,error){
-					console.log("error retrieving user with id : " + parseId);
-					return Parse.Promise.error("error finding user with email (" + customer.email + ") and id (" + parseId + ")");
-				}
-			});
-			console.log("customer object propagated email : " + customer.email);
-		});
-	});
-});
