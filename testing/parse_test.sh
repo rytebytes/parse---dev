@@ -5,6 +5,6 @@ curl -X POST \
   -H "X-Parse-REST-API-Key: ZjCVp64qsDxYWw6PktZgc5PFZLdLmRuHe9oOF3q9" \
   -H "Content-Type: application/json" \
   -d '{}' \
-  https://api.parse.com/1/functions/location
+  https://api.parse.com/1/functions/content
 
 echo 

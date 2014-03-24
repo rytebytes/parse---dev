@@ -4,6 +4,10 @@
             "applicationId": "zaZmkcjbGLCrEHagb8uJPt5TKyiFgCg9WffA6c6M", 
             "masterKey": "vU1HJUY3MKsuqthF0vhXew0S54n2xpuIL7obTGBU"
         }, 
+        "RyteBytes-Dev": {
+            "applicationId": "UDW2iXLErRqiBp7ftE8wJpmymYft3r67QvwD0pDn", 
+            "masterKey": "4ZoFrPMfnmOM3dUcwlSHEhrQT6hse0JohUgcldOr"
+        }, 
         "_default": {
             "link": "RyteBytes"
         }

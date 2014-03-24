@@ -1,13 +1,16 @@
 
 var Stripe = require ('stripe');
 var _ = require('underscore');
+var moment = require('moment');
 var inventory = require('cloud/inventory_report.js');
+var accounting = require('cloud/accounting.js');
 var Mandrill = require('mandrill');
 
 //Init Modules
 Mandrill.initialize('KAszMl4utMaqTKy-ROWTcw');
 
 Stripe.initialize('sk_test_0eORjVUmVNJxwTHqMLLCogZr');
+//Stripe.initialize('sk_live_Bq60JoiLVW4UuubynRCqMFh4');
 
 var LocationItem = Parse.Object.extend("LocationItem");
 var Location = Parse.Object.extend("Location");
@@ -15,6 +18,9 @@ var MenuItem = Parse.Object.extend("MenuItem");
 var OrderItem = Parse.Object.extend("OrderItem");
 var Order = Parse.Object.extend("Order");
 var User = Parse.Object.extend("User");
+var UserCoupon = Parse.Object.extend("UserCoupon");
+
+var STRIPE_ID = "stripe_id";
 
 //This object has two properties
 //  - message : a message to return to caller
@@ -23,8 +29,120 @@ var User = Parse.Object.extend("User");
 var OrderingError = Parse.Object.extend("OrderingError");
 
 
-var STRIPE_ID = "stripe_id";
+/*
+	Rules for validation:
+		- not expired
+		- not used before 
+ */
+function validateCoupon(couponCode,userId) {
+	console.log("Enter validateCoupon");
 
+	var query = new Parse.Query("Coupon");
+	var couponAmount;
+
+	var couponPromise = new Parse.Promise();
+
+	query.equalTo("code",couponCode);
+
+	Parse.Promise.as().then(
+		function(){
+			return query.find();
+		}
+	).then(
+		function(couponResults){
+
+			if(couponResults.length == 0){
+				return Parse.Promise.error("No valid coupon found - please try again!");
+			}
+
+			var coupon = couponResults[0];
+
+			couponAmount = coupon.get("value");
+
+			var userCouponQuery = new Parse.Query("UserCoupon");
+			query.equalTo("userId",userId);
+			query.equalTo("couponCode",coupon.get("code"));
+
+			var expire = new Date(coupon.get("expiration"));
+
+			if(expire > new Date()){
+				//valid date - check if user has used it before
+				return userCouponQuery.find();
+			} else {
+				return Parse.Promise.error("This coupon has expired and is no longer valid!");
+			}
+		}
+	).then(
+		function(userCouponObjectResults){
+			console.log("userCouponObjectResults length : " + userCouponObjectResults.length);
+			if(userCouponObjectResults.length > 0){
+				return Parse.Promise.error("You have already used this coupon, it is no longer valid!");
+			}
+			return new Parse.Promise().resolve();
+		}
+	).then(
+		function(promise){
+			var couponResult = {
+				valid : true,
+				message : "",
+				amount : couponAmount
+			}
+			couponPromise.resolve(couponResult);
+		},
+		function(error){
+			var couponResult = {
+				valid : false,
+				message : error,
+				amount : 0
+			};
+			couponPromise.reject(couponResult);
+		}
+	);
+
+	return couponPromise;
+}
+
+
+
+
+/*
+	Name : /content
+	API Version Introduced : v2
+	Parameters :
+		- name (REQUIRED) - the name of the content to retrieve
+	Returns : 
+		- Text object
+	Release notes :
+		v2 - newly introduced in v2 to allow updating heating instructions
+*/
+Parse.Cloud.define("content",function(request,response){
+	var query = new Parse.Query("Text");
+	query.equalTo("name",request.params.name);
+	query.find({
+		success: function(results){
+			if(results.length > 0){
+				return response.success(results[0]);
+			}
+			else{
+				return response.error("No content found with name : " + request.params.name);
+			}
+		},
+		error: function(error){
+			return response.error(error);
+		}
+	});
+});
+
+/*
+	Name : /location
+	API Version Introduced : v1
+	Parameters : none
+	Returns : 
+		- location object, with charity information
+	Release notes :
+		v1 - none
+ 		v2 - 
+*/
 Parse.Cloud.define("location", function(request,response){
 	var query = new Parse.Query("Location");
 	query.include("charityId");
@@ -38,6 +156,16 @@ Parse.Cloud.define("location", function(request,response){
 	});
 });
 
+/*
+	Name : /charity
+	API Version Introduced : v1 
+	Parameters : none
+	Returns : 
+		- all charity objects
+	Release notes :
+		v1 - none
+		v2 - 
+*/
 Parse.Cloud.define("charity",function(request,response){
 	var query = new Parse.Query("Charity");
 	query.find({
@@ -50,8 +178,25 @@ Parse.Cloud.define("charity",function(request,response){
 	});
 });
 
+/*
+	Name : /retrievemenu
+	API Version Introduced : v1
+	Parameters : 
+		v1 
+			locationId (OPTIONAL) - used to request menu for a specific location
+		v2
+			locationId (REQUIRED) - request menu for specific location
+	Returns : 
+		v1  
+			- if the locationId is specified, it will return a list of LocationItems
+			- if there is no locationId, it will return the list of MenuItems
+		v2
+			- no changes
+	Release notes :
+		v1 - none
+		v2 - Although the locationId is now required for all menu request, it isn't enforced on the backend to ensure backward compatibility 
+*/
 Parse.Cloud.define("retrievemenu", function(request,response){
-
 	if(request.params.locationId){
 		var query = new Parse.Query(LocationItem);
 		query.include("menuItemId");
@@ -85,6 +230,20 @@ Parse.Cloud.define("retrievemenu", function(request,response){
 	}
 });
 
+/*
+	Name : /itemquantity
+	API Version Introduced: v1
+	Parameters : 
+		v1
+			objectId (REQUIRED) - the unique id of the locationItem that the quantity is being requested for
+		v2
+			no changes
+	Returns : 
+		- the number of items remaining at that location
+	Release notes :
+		v1 - none
+ 
+*/
 Parse.Cloud.define("itemquantity", function(request,response){
 	var query = new Parse.Query("LocationItem");
 	query.equalTo("objectId",request.params.objectId);
@@ -104,6 +263,14 @@ Parse.Cloud.define("itemquantity", function(request,response){
 	});
 });
 
+/*
+	Name : /getlocation
+	API Version Introduced: 
+	Parameters : 
+	Returns : 
+	Release notes :
+ 
+*/
 Parse.Cloud.define("getlocation", function(request,response){
 	var query = new Parse.Query(Location);
 	query.equalTo("objectId",request.params.objectId);
@@ -123,13 +290,44 @@ Parse.Cloud.define("getlocation", function(request,response){
 	});
 });
 
+//receive order object with coupon attribute
+//check if coupon is valid
+//always return the following:
+// valid : yes/no
+// error message : empty if it was a valid code, otherwise an error to be displayed
+// amount : amount to deduct from order when app places it
+Parse.Cloud.define("coupon",function(request,response){
+	Parse.Promise.as().
+	then(
+		function(){
+			return validateCoupon(request.params.couponCode,request.params.userId);
+		}
+	).then(
+		function(couponResult){
+			return response.success(couponResult);
+		},
+		function(couponResult){
+			return response.success(couponResult);
+		}
+	);
+});
+
+/*
+	Name :
+	API Version :
+	Parameters : 
+	Returns : 
+	Release notes :
+ 
+*/
 /*
 Web Service to place an order. Requires an order object:
 {
-	userId : <User objectId>, 
-	locationId : <Location objectId>,
-	totalInCents: <order amount in USD cents>,
-	orderItemDictionary:
+	couponCode : <coupon code> //added in V2
+	userId : <User objectId>, //added in V2
+	locationId : <Location objectId>, //added in V2
+	totalInCents: <order amount in USD cents>, //added in V2
+	orderItemDictionary: //added in V2
 		{
 			"SxftUkXojG":{"quantity":1},
 			"zNQHnmvC4r":{"quantity":1},
@@ -190,9 +388,48 @@ Parse.Cloud.define("order", function(request,response){
 
 	var quantityAvailable = -1;
 
-	Parse.Promise.as().then(function(){ //save the current order object
-		return currentOrder.save();
-	})
+	var query = new Parse.Query(Parse.User);
+	var itemString = "";
+
+
+	Parse.Promise.as().then(
+		function(){
+			if(request.params.couponCode){
+				console.log("validating coupon code in order : " + request.params.couponCode);
+				return validateCoupon(request.params.couponCode,request.params.userId);
+			}
+			return new Parse.Promise.as();
+		}
+	).then(
+		function(couponResult){
+			console.log("valid coupon");
+			return new Parse.Promise.as();
+		},
+		function(couponResult){
+			console.log("invalid coupon");
+			return Parse.Promise.error("Invalid coupon, please enter a different coupon code!");
+		}
+	).then(
+		function(){
+			return query.get(userId);
+		}
+	).then(
+		function(parseUser){
+			var stripeId = parseUser.get("stripeId");
+			console.log("stripe id : " + parseUser.get("stripeId"));
+			console.log(stripeId.substring(0,3));
+			if(stripeId.substring(0,3) == "tok") {//there was an error saving cc info to Stripe
+				console.log("problem with cc data.");
+				response.error("Error with credit card data, please go to the 'My Account' tab and update your information.");
+			} else {
+				return new Parse.Promise.as();
+			}
+		}
+	).then(
+		function(){ //save the current order object
+			return currentOrder.save();
+		}
+	)
 	.then(
 		function(currentOrder) {
 			console.log("new order id : " + currentOrder.id);
@@ -241,6 +478,7 @@ Parse.Cloud.define("order", function(request,response){
 						if(null == locationItem){
 							return Parse.Promise.error("<" + menuItemId + "> not available at the selected location.");
 						} else {
+							itemString = itemString + locationItem.get("menuItemId").get("name") + "<br>"
 							startQuantity = locationItem.get("quantity");
 							console.log("Modifying locationItem quantity.");
 							console.log("Before adjustment: " + startQuantity);
@@ -272,10 +510,14 @@ Parse.Cloud.define("order", function(request,response){
 	).then(
 		function(userObject){
 			stripeId = userObject.get("stripeId");
+			user = userObject;
 			return Stripe.Charges.create({
 					amount: request.params.totalInCents, //in cents
 					currency: 'usd',
-					customer: stripeId
+					customer: stripeId,
+					description: 'Thanks for your purchase of RyteBytes! Remember to keep frozen until ready to heat!<br>' +
+								 'We donate 10% of our profits to your local food bank!<br>' +
+								 'Items Ordered : ' + itemString 
 			});
 		},
 		function(error){
@@ -289,8 +531,53 @@ Parse.Cloud.define("order", function(request,response){
 		}
 	).then(
 		function(order){
-			console.log("saved order id : " + order.id);
-			console.log("stripe purchase id : " + order.get("stripePurchaseId"));
+			if(request.params.couponCode){
+				console.log("creating user coupon object");
+				var userCoupon = new UserCoupon();
+				userCoupon.set("orderId",order);
+				userCoupon.set("couponCode",request.params.couponCode);
+				userCoupon.set("userId",order.get("userId"));
+				return userCoupon.save();
+			}	
+		}
+	).then(
+		function(userCoupon){
+			// console.log("saved order id : " + order.id);
+			// console.log("stripe purchase id : " + order.get("stripePurchaseId"));
+			// console.log("itemString : " + itemString);
+			var amount = accounting.formatMoney(request.params.totalInCents / 100);
+			Parse.Cloud.httpRequest({
+				  method: 'POST',
+				  url: 'https://mandrillapp.com/api/1.0/messages/send-template.json',
+				  headers: {
+				    'Content-Type': 'application/json'
+				  },
+				  body: {
+				  	key: 'KAszMl4utMaqTKy-ROWTcw',
+				  	template_name: 'Receipt v1',
+				  	template_content: [{
+				  		name:'items',
+				  		content:itemString
+				  	}],
+				    message: {
+						global_merge_vars: [{
+							name:"ORDERTOTAL",
+							content:amount
+						}],
+						subject: "RyteBytes Receipt",
+						from_email:"info@myrytebytes.com",
+						to: [{
+								email:user.get("email")
+						}]
+					}
+				  },
+				  success: function(httpResponse) {
+				    console.log(httpResponse.text);
+				  },
+				  error: function(httpResponse) {
+				    console.error('Request failed with response code ' + httpResponse.status);
+				  }
+			});
 			response.success("success");
 		},
 		function(error){ 
@@ -303,6 +590,11 @@ Parse.Cloud.define("order", function(request,response){
 			orderingError = error;
 
 			var promise = Parse.Promise.as();
+
+			if(currentOrder.get("id") == null){
+				console.log("In order error handler, currentOrder object has no id, so hasn't been saved. Don't need to remove order since it was never saved.");
+				return response.error(error);
+			}
 
 			var query = new Parse.Query("OrderItem");
 			query.equalTo("orderId",currentOrder);
@@ -331,7 +623,13 @@ Parse.Cloud.define("order", function(request,response){
 			).then(
 				function(){
 					console.log("orderingError : " + orderingError);
-					return response.error(orderingError);
+					if(orderingError.message == null)
+						return response.error(orderingError);
+					else if(orderingError.message == "Your card was declined.")
+						return response.error(orderingError.message);
+					else
+						return response.error("Unknown error, please try again.");
+						
 				},
 				function(error){
 					return response.error(error);
@@ -341,7 +639,14 @@ Parse.Cloud.define("order", function(request,response){
 	)
 });
 
-
+/*
+	Name :
+	API Version :
+	Parameters : 
+	Returns : 
+	Release notes :
+ 
+*/
 Parse.Cloud.beforeDelete("OrderItem",function(request,response){
 	var orderItem = request.object;
 	var userId;
@@ -424,195 +729,155 @@ Parse.Cloud.beforeDelete("OrderItem",function(request,response){
 	);
 });
 
-	/*Parse.Promise.as().then(function() {
-    // Find the item to purchase.
-    var itemQuery = new Parse.Query('Item');
-    itemQuery.equalTo('name', request.params.itemName);
-
-    // Find the resuts. We handle the error here so our
-    // handlers don't conflict when the error propagates.
-    // Notice we do this for all asynchronous calls since we
-    // want to handle the error differently each time.
-    return itemQuery.first().then(null, function(error) {
-      return Parse.Promise.error('Sorry, this item is no longer available.');
-    });
-
-  }).then(function(result) {
-    // Make sure we found an item and that it's not out of stock.
-    if (!result) {
-      return Parse.Promise.error('Sorry, this item is no longer available.');
-    } else if (result.get('quantityAvailable') <= 0) { // Cannot be 0
-      return Parse.Promise.error('Sorry, this item is out of stock.');
-    }
-
-    // Decrease the quantity.
-    item = result;
-    item.increment('quantityAvailable', -1);
-
-    // Save item.
-    return item.save().then(null, function(error) {
-      console.log('Decrementing quantity failed. Error: ' + error);
-      return Parse.Promise.error('An error has occurred. Your credit card was not charged.');
-    });
-
-  }).then(function(result) {
-    // Make sure a concurrent request didn't take the last item.
-    item = result;
-    if (item.get('quantityAvailable') < 0) { // can be 0 if we took the last
-      return Parse.Promise.error('Sorry, this item is out of stock.');
-    }
-
-    // We have items left! Let's create our order item before 
-    // charging the credit card (just to be safe).
-    order = new Parse.Object('Order');
-    order.set('name', request.params.name);
-    order.set('email', request.params.email);
-    order.set('address', request.params.address);
-    order.set('zip', request.params.zip);
-    order.set('city_state', request.params.city);
-    order.set('item', item);
-    order.set('size', request.params.size || 'N/A');
-    order.set('fulfilled', false);
-    order.set('charged', false); // set to false until we actually charge the card
-
-    // Create new order
-    return order.save().then(null, function(error) {
-      // This would be a good place to replenish the quantity we've removed.
-      // We've ommited this step in this app.
-      console.log('Creating order object failed. Error: ' + error);
-      return Parse.Promise.error('An error has occurred. Your credit card was not charged.');
-    });
-
-  }).then(function(order) { 
-    // Now we can charge the credit card using Stripe and the credit card token.
-    return Stripe.Charges.create({
-      amount: item.get('price') * 100, // express dollars in cents 
-      currency: 'usd',
-      card: request.params.cardToken
-    }).then(null, function(error) {
-      console.log('Charging with stripe failed. Error: ' + error);
-      return Parse.Promise.error('An error has occurred. Your credit card was not charged.');
-    });
-
-  }).then(function(purchase) {
-    // Credit card charged! Now we save the ID of the purchase on our
-    // order and mark it as 'charged'.
-    order.set('stripePaymentId', purchase.id);
-    order.set('charged', true);
-
-    // Save updated order
-    return order.save().then(null, function(error) {
-      // This is the worst place to fail since the card was charged but the order's
-      // 'charged' field was not set. Here we need the user to contact us and give us
-      // details of their credit card (last 4 digits) and we can then find the payment
-      // on Stripe's dashboard to confirm which order to rectify. 
-      return Parse.Promise.error('A critical error has occurred with your order. Please ' + 
-                                 'contact store@parse.com at your earliest convinience. ');
-    });
-
-  }).then(function(order) {
-    // Credit card charged and order item updated properly!
-    // We're done, so let's send an email to the user.
-
-    // Generate the email body string.
-    var body = "We've received and processed your order for the following item: \n\n" +
-               "Item: " + request.params.itemName + "\n";
-
-    if (request.params.size && request.params.size !== "N/A") {
-      body += "Size: " + request.params.size + "\n";
-    }
-
-    body += "\nPrice: $" + item.get('price') + ".00 \n" +
-            "Shipping Address: \n" +
-            request.params.name + "\n" +
-            request.params.address + "\n" +
-            request.params.city_state + "," +
-            "United States, " + request.params.zip + "\n" +
-            "\nWe will send your item as soon as possible. " + 
-            "Let us know if you have any questions!\n\n" +
-            "Thank you,\n" +
-            "The Parse Team";
-
-    // Send the email.
-    return Mailgun.sendEmail({
-      to: request.params.email,
-      from: 'store@parse.com',
-      subject: 'Your order for a Parse ' + request.params.itemName + ' was successful!',
-      text: body
-    }).then(null, function(error) {
-      return Parse.Promise.error('Your purchase was successful, but we were not able to ' +
-                                 'send you an email. Contact us at store@parse.com if ' +
-                                 'you have any questions.');
-    });
-
-  }).then(function() {
-    // And we're done!
-    response.success('Success');
-
-  // Any promise that throws an error will propagate to this handler.
-  // We use it to return the error from our Cloud Function using the 
-  // message we individually crafted based on the failure above.
-  }, function(error) {
-    response.error(error);
-  });
+/*
+	Name :
+	API Version :
+	Parameters : 
+	Returns : 
+	Release notes :
+ 
 */
-// });
+Parse.Cloud.define("updateuser",function(request,response){
+	Parse.Cloud.useMasterKey();
+	console.log("update user : " + request.params.userId);
+	console.log("token : " + request.params.token);
+	console.log("stripeId : " + request.params.stripeId);
 
+	var query = new Parse.Query(Parse.User);
+	Parse.Promise.as().then(
+		function(){
+			return query.get(request.params.userId);
+		}
+	).then(
+		function(parseUser){
+			console.log(request.params.token.substring(0,3));
+			if(request.params.token.substring(0,3) == "tok") {//there was an error saving cc info to Stripe originally, so no customer object exists, now try and create with new data
+				var customerRequestObject = {
+					card : request.params.token,
+					email : parseUser.get("email"),	
+				}
+
+				return Stripe.Customers.create(customerRequestObject)
+				.then(
+					function(stripeUser){
+						console.log("Setting stripeId of " + stripeUser.id + " for userId : " + request.params.userId);
+						parseUser.set("stripeId", stripeUser.id);
+						return parseUser.save();
+					}
+				);
+			}
+			else {
+				return Stripe.Customers.update(request.params.stripeId,{
+					card : request.params.token
+				});
+			}
+		}
+	).then(
+		function(stripeUser){
+			console.log("successully updated stripe info for user : " + request.params.userId);
+			return response.success("success");
+		},
+		function(error){
+			var errorMsg = "Error saving credit card data - please check the values and try again.";
+			if(error.message && error.message != ""){
+				errorMsg = error.message;
+			}
+			console.log("error saving info in parse : " + error.message);
+			return response.error(errorMsg);
+		}
+	);
+});
+
+/*
+	Name :
+	API Version :
+	Parameters : 
+	Returns : 
+	Release notes :
+ 
+*/
+Parse.Cloud.define("userinfo",function(request,response){
+	console.log("retrieve stripe info for user : " + request.params.userId);
+
+	var query = new Parse.Query(Parse.User);
+	Parse.Promise.as().then(
+		function(){
+			return query.get(request.params.userId);
+		}
+	).then(
+		function(user){
+			console.log("stripeId for user : " + user.get("stripeId"));
+			return Stripe.Customers.retrieve(user.get("stripeId"));
+		},
+		function(error){
+			console.log("error retrieving user : " + error.message);
+			return error;
+		}
+	).then(
+		function(stripeCustomer){
+			response.success(stripeCustomer);
+		},
+		function(error){
+			response.error("Error retrieving stripe information.");
+		}
+	);
+});
+
+/*
+	Name :
+	API Version :
+	Parameters : 
+	Returns : 
+	Release notes :
+ 
+*/
 //Things to do:
 	//1. Call Stripe to save customer data
 	//2. Verify success
 	//3. Query for user object & save with Stripe customer id
 	//4. Return result to caller
-Parse.Cloud.define("createuser", function(request,response){
-	console.log("Created new customer with email of : " + request.params.email);
-	console.log("User's Parse ID :" + request.params.id);
+Parse.Cloud.afterSave(Parse.User, function(request){
+	var user = request.object;
 
-	var parseId = request.params.id;
-	var stripeId;
+	if(!user.existed()){
+		console.log("Creating new stripe customer with email of : " + user.get("email"));
+		console.log("User's token :" + user.get("stripeId"));
 
-	var customerRequestObject = {
-		card : request.params.default_card,
-		email : request.params.email,	
-	}
+		var parseId = user.id;
+		var stripeId = user.get("stripeId");
 
-	Parse.Promise.as().then(function() {
-		Stripe.Customers.create(customerRequestObject).then(
-			function(customer){
-				console.log("Created new customer object in Stripe with email: " + customer.email);
-				console.log("stripe customer id : " + customer.id);
-				return customer;
-			},
-			function(error){
-				console.log("stripe customer save failed : " + error);
-				return Parse.Promise.error("failed to save customer in Stripe");
-			}
-		).then(function(customer){
-			//update user with stripe id here;
-			console.log("Setting stripe id (" + customer.id + ") on customer with email (" + customer.email + ") + parseId : " + parseId);
-			var query = new Parse.Query(Parse.User);
-			query.get(parseId, {
-				success: function(userObject){
-					console.log("found user object with email : " + userObject.get("email"));
-					userObject.set("stripe_id", customer.id);
-					userObject.save().then(	
-						function(parseCustomer)
-						{
-							console.log("Successfully saved stripe id to user object.");
-							return response.success("successfully updated user with Stripe information.");
-						},
-						function(error)
-						{
-							console.log("Error saving stripe info to user object : " + error.message);
-							return Parse.Promise.error("error saving stripe data to user.");
-						}
-					);
+		var customerRequestObject = {
+			card : stripeId,
+			email : user.get("email"),	
+		}
+
+		Parse.Promise.as().then(function() {
+			Stripe.Customers.create(customerRequestObject).then(
+				function(customer){
+					console.log("Created new customer object in Stripe with email: " + customer.email);
+					console.log("stripe customer id : " + customer.id);
+					return customer;
 				},
-				error: function(object,error){
-					console.log("error retrieving user with id : " + parseId);
-					return Parse.Promise.error("error finding user with email (" + customer.email + ") and id (" + parseId + ")");
+				function(error){
+					console.log("stripe customer save failed : " + error.message);
+					return Parse.Promise.error("failed to save customer in Stripe");
 				}
-			});
-			console.log("customer object propagated email : " + customer.email);
+			).then(
+				function(customer){
+					//update user with stripe id here;
+					console.log("Setting stripe id (" + customer.id + ") on customer with email (" + customer.email + ") + parseId : " + parseId);
+					user.set("stripeId",customer.id);
+					return user.save();
+				}
+			).then(
+				function(newUser){
+					console.log("updated stripeId to : " + newUser.get("stripeId") + " for user with email : " + newUser.get("email"));
+				},
+				function(error){
+					console.log("error saving stripe info for user.");
+				}
+			);
 		});
-	});
+	}
 });
+
