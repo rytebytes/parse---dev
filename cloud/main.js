@@ -42,7 +42,7 @@ function validateCoupon(couponCode,userId) {
 
 	var couponPromise = new Parse.Promise();
 
-	query.equalTo("code",couponCode);
+	query.equalTo("code",couponCode.toUpperCase());
 
 	Parse.Promise.as().then(
 		function(){
@@ -52,16 +52,22 @@ function validateCoupon(couponCode,userId) {
 		function(couponResults){
 
 			if(couponResults.length == 0){
-				return Parse.Promise.error("No valid coupon found - please try again!");
+				return Parse.Promise.error("Coupon code is not valid - please try again!");
 			}
 
 			var coupon = couponResults[0];
 
 			couponAmount = coupon.get("value");
 
+			var user = new User();
+			user.set("id",userId);
+
 			var userCouponQuery = new Parse.Query("UserCoupon");
-			query.equalTo("userId",userId);
-			query.equalTo("couponCode",coupon.get("code"));
+			userCouponQuery.equalTo("userId",user);
+			userCouponQuery.equalTo("couponCode",coupon.get("code"));
+
+			console.log("couponCode : " + coupon.get("code"));
+			console.log("userid : " + userId);
 
 			var expire = new Date(coupon.get("expiration"));
 
@@ -352,6 +358,13 @@ Parse.Cloud.define("order", function(request,response){
 	if(request.params.orderItemDictionary == null)
 		return response.error("No items provided with order.");
 
+	if(request.params.locationId == '4LlYqSRdc2') {
+		if(request.params.userId != 'Gt3GLJYx2D') //check for my account
+			return response.error("Invalid location selected, please go to 'My Account' and select a new location.");
+		// if(request.params.userId != '') //check for geoff's account
+		// 	return response.error("Invalid location selected, please go to 'My Account' and select a new location.");
+	}
+
 	/*
 	- have to write order first, & then create order items b/c they need a pointer to the order
 	- Things to be done when an order is sent:
@@ -407,7 +420,7 @@ Parse.Cloud.define("order", function(request,response){
 		},
 		function(couponResult){
 			console.log("invalid coupon");
-			return Parse.Promise.error("Invalid coupon, please enter a different coupon code!");
+			return Parse.Promise.error(couponResult.message);
 		}
 	).then(
 		function(){
@@ -511,23 +524,37 @@ Parse.Cloud.define("order", function(request,response){
 		function(userObject){
 			stripeId = userObject.get("stripeId");
 			user = userObject;
-			return Stripe.Charges.create({
+			if(request.params.totalInCents != 0 && request.params.locationId != '4LlYqSRdc2'){
+				return Stripe.Charges.create({
 					amount: request.params.totalInCents, //in cents
 					currency: 'usd',
 					customer: stripeId,
 					description: 'Thanks for your purchase of RyteBytes! Remember to keep frozen until ready to heat!<br>' +
 								 'We donate 10% of our profits to your local food bank!<br>' +
 								 'Items Ordered : ' + itemString 
-			});
+				});
+			} else {
+				console.log("Order total is 0 cents or updating inventory.  No charge sent to stripe.  Order object will have undefined for stripePurchaseId");
+				console.log("Location id : " + request.params.locationId);
+				console.log("Order total : " + request.params.totalInCents);
+				return Parse.Promise.as();
+			}
 		},
 		function(error){
 			return error;
 		}
 	).then(
 		function(purchase){
-			console.log("purchase id : " + purchase.id);
-			currentOrder.set("stripePurchaseId",purchase.id);
-			return currentOrder.save();
+			if(purchase == null) {
+				console.log('purchase id was null.  this means the order amount was 0 and no charge was sent to Stripe');
+
+			} else {
+				console.log("purchase id : " + purchase.id);
+				currentOrder.set("stripePurchaseId",purchase.id);
+			}
+
+			return currentOrder.save();	
+			
 		}
 	).then(
 		function(order){
@@ -591,7 +618,7 @@ Parse.Cloud.define("order", function(request,response){
 
 			var promise = Parse.Promise.as();
 
-			if(currentOrder.get("id") == null){
+			if(currentOrder.id == null){
 				console.log("In order error handler, currentOrder object has no id, so hasn't been saved. Don't need to remove order since it was never saved.");
 				return response.error(error);
 			}
